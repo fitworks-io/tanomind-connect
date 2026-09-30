@@ -1,0 +1,95 @@
+<!doctype html>
+<html>
+<head>
+<base target="_top">
+<style>
+  body { font: 14px/1.5 Arial, sans-serif; color: #111; padding: 12px; }
+  button { display: block; width: 100%; margin: 6px 0; padding: 8px; border-radius: 6px; border: 1px solid #111; background: #111; color: #fff; cursor: pointer; }
+  button.ghost { background: #fff; color: #111; }
+  button[disabled] { opacity: .4; cursor: not-allowed; }
+  #result { white-space: pre-wrap; border: 1px solid #ccc; border-radius: 6px; padding: 8px; margin-top: 8px; }
+  #result:empty, .hidden { display: none; }
+  .error { color: #c00; }
+  small { color: #555; }
+</style>
+</head>
+<body>
+<div id="signedOut" class="hidden">
+  <p>Connect your Tanomind agent to get help with this Doc.</p>
+  <button id="connect">Connect a Tanomind agent</button>
+  <button id="done" class="ghost hidden">I approved it</button>
+</div>
+<div id="signedIn" class="hidden">
+  <p>Agent: <strong id="handle"></strong></p>
+  <small>Works on your selection, or the whole Doc if nothing is selected.</small>
+  <button data-mode="proofread">Proofread</button>
+  <button data-mode="summarize">Summarize</button>
+  <button data-mode="title">Suggest a title</button>
+  <p id="status"></p>
+  <div id="result"></div>
+  <button id="insert" class="ghost hidden">Insert at cursor</button>
+  <button id="disconnect" class="ghost">Disconnect</button>
+</div>
+<script>
+  var $ = function (id) { return document.getElementById(id); };
+  var answer = null;
+  var run = function (name, args) {
+    return new Promise(function (resolve, reject) {
+      google.script.run.withSuccessHandler(resolve).withFailureHandler(reject)[name].apply(null, args || []);
+    });
+  };
+  var say = function (text, isError) { $("status").textContent = text; $("status").className = isError ? "error" : ""; };
+
+  function refresh() {
+    run("status").then(function (s) {
+      $("signedOut").classList.toggle("hidden", s.connected);
+      $("signedIn").classList.toggle("hidden", !s.connected);
+      if (s.connected) $("handle").textContent = "@" + s.handle;
+    });
+  }
+
+  $("connect").onclick = function () {
+    run("startConnect").then(function (url) {
+      window.open(url, "_blank");
+      $("done").classList.remove("hidden");
+    }).catch(function (e) { alert(e.message); });
+  };
+  $("done").onclick = refresh;
+  $("disconnect").onclick = function () { run("disconnect").then(refresh); };
+  $("insert").onclick = function () {
+    run("insertText", [answer]).then(function () { say("Inserted."); }).catch(function (e) { say(e.message, true); });
+  };
+
+  var buttons = Array.prototype.slice.call(document.querySelectorAll("[data-mode]"));
+  buttons.forEach(function (button) {
+    button.onclick = function () {
+      var mode = button.dataset.mode;
+      buttons.forEach(function (b) { b.disabled = true; });
+      $("result").textContent = "";
+      $("insert").classList.add("hidden");
+      say("Sending to your agent...");
+      run("askAgent", [mode]).then(function poll(taskId) {
+        return new Promise(function (r) { setTimeout(r, 3000); }).then(function () {
+          return run("checkTask", [taskId, mode]);
+        }).then(function (task) {
+          if (task.status === "completed") {
+            answer = task.value;
+            $("result").textContent = task.value;
+            $("insert").classList.remove("hidden");
+            say(task.message || "Done.");
+            return;
+          }
+          if (["failed", "canceled", "expired"].indexOf(task.status) >= 0) throw new Error(task.message || "The task " + task.status + ".");
+          say(task.status === "input-required" ? "Your agent has a question. Answer it in Tanomind Settings under Connected apps." : "Your agent is working on it...");
+          return poll(taskId);
+        });
+      }).catch(function (e) { say(e.message, true); }).then(function () {
+        buttons.forEach(function (b) { b.disabled = false; });
+      });
+    };
+  });
+
+  refresh();
+</script>
+</body>
+</html>
